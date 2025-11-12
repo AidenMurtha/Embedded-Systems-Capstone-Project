@@ -1,0 +1,65 @@
+ESP32 code for connecting to wifi and sending fake voltage and current data to the website.
+
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+
+//  Wi-Fi credentials 
+const char* ssid     = "WIFI Name";
+const char* password = "Password";
+
+
+//  Google Apps Script Web App URL 
+const char* scriptURL = "https://script.google.com/macros/s/AKfycbyrVMwEu2WB0vtFGT8TorP-Yl73k16VQuwaG3tQ8MIq2mO1-RHui-x78ON8EdJO-seR5g/exec";
+
+//  Token must match SCRIPT_TOKEN in Apps Script 
+const char* token = "esp_secure_token_123";
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("ESP32 -> Google Sheets Data Test");
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(scriptURL);
+    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+    // Generate fake voltage and current values
+    float voltage = 11.5 + random(-10, 10) * 0.01;  // ~11.4–11.6V
+    float current = 120.0 + random(-50, 50) * 0.1;  // ~115–125mA
+
+    // Format POST data
+    String postData = "token=" + String(token) +
+                      "&voltage=" + String(voltage, 2) +
+                      "&current=" + String(current, 2);
+
+    Serial.println("Posting: " + postData);
+
+    int httpCode = http.POST(postData);
+    if (httpCode > 0) {
+      Serial.printf("HTTP %d -> %s\n", httpCode, http.getString().c_str());
+    } else {
+      Serial.printf("POST failed: %s\n", http.errorToString(httpCode).c_str());
+    }
+
+    http.end();
+  } else {
+    Serial.println("Wi-Fi disconnected, reconnecting...");
+    WiFi.reconnect();
+  }
+
+  delay(10000);  // send every 10 seconds
+}
