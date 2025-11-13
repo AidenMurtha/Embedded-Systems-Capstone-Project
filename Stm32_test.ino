@@ -1,0 +1,128 @@
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+
+Adafruit_INA219 ina219;
+
+// how many readings to average over
+const int sampleInterval = 1000;   // 1 second per reading
+const int averagePeriod  = 5000;   // 5 seconds
+const int numSamples     = averagePeriod / sampleInterval;
+
+float totalBusVoltage = 0;
+float totalCurrent    = 0;
+float totalPower      = 0;
+int sampleCount       = 0;
+
+unsigned long lastSampleTime = 0;
+
+// ---------- Relay config ----------
+const int relayPin = 7;            // Arduino pin connected to relay IN
+const bool relayActiveLow = false; // true if module is LOW-trigger (IN LOW = relay ON)
+
+// Trip thresholds (in mA)
+const float trip_mA  = 150.0; // trip when 5-second average >= this (150 mA = 0.15 A)
+const float reset_mA = 125.0; // reset when average <= this (125 mA = 0.125 A)
+
+// Inrush ignore: ignore trip checks for a short time after turning relay ON
+const unsigned long inrushIgnoreMs = 500; // 0.5 s
+
+// state variables
+bool relayOn = false;
+bool tripped = false;
+unsigned long lastRelayOnTime = 0;
+
+void setup() {
+  Serial.begin(9600);
+  Serial.println("INA219 Average Voltage Monitor + Relay Trip");
+
+  // Relay pin setup: ensure OFF at startup
+  pinMode(relayPin, OUTPUT);
+  if (relayActiveLow) digitalWrite(relayPin, HIGH); else digitalWrite(relayPin, LOW);
+  relayOn = false;
+
+  if (!ina219.begin()) {
+    Serial.println("Failed to find INA219 chip");
+    while (1) { delay(10); }
+  }
+
+  ina219.setCalibration_32V_2A(); // Calibrate for 0–32V, up to 2A
+}
+
+void setRelayState(bool on) {
+  if (relayActiveLow) digitalWrite(relayPin, on ? LOW : HIGH);
+  else              digitalWrite(relayPin, on ? HIGH : LOW);
+
+  if (on) lastRelayOnTime = millis();
+  relayOn = on;
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // Take a reading every second
+  if (currentMillis - lastSampleTime >= sampleInterval) {
+    lastSampleTime = currentMillis;
+
+    float busVoltage = ina219.getBusVoltage_V();
+    float current_mA = ina219.getCurrent_mA(); // in mA
+    float power_mW   = ina219.getPower_mW();
+
+    totalBusVoltage += busVoltage;
+    totalCurrent    += current_mA;
+    totalPower      += power_mW;
+    sampleCount++;
+
+    Serial.print("Sample "); Serial.print(sampleCount);
+    Serial.print(" I(mA): "); Serial.print(current_mA);
+    Serial.print("  RelayOn: "); Serial.print(relayOn ? "Y" : "N");
+    Serial.print("  Tripped: "); Serial.println(tripped ? "Y" : "N");
+
+    // After numSamples (5 seconds), calculate and act on averages
+    if (sampleCount >= numSamples) {
+      float avgBusVoltage = totalBusVoltage / sampleCount;
+      float avgCurrent    = totalCurrent / sampleCount;
+      float avgPower      = totalPower / sampleCount;
+
+      Serial.println("----- 5 Second Average -----");
+      Serial.print("Average Bus Voltage: "); Serial.print(avgBusVoltage); Serial.println(" V");
+      Serial.print("Average Current:     "); Serial.print(avgCurrent);    Serial.println(" mA");
+      Serial.print("Average Power:       "); Serial.print(avgPower);      Serial.println(" mW");
+      Serial.println("----------------------------");
+
+      // Trip logic with hysteresis and inrush ignore
+      bool ignoreDueToInrush = false;
+      if (relayOn && (millis() - lastRelayOnTime) < inrushIgnoreMs) ignoreDueToInrush = true;
+
+      if (!tripped) {
+        // Normal operation: if avg >= trip threshold (and not ignored), trip and open relay
+        if ((!ignoreDueToInrush) && (avgCurrent >= trip_mA)) {
+          tripped = true;
+          setRelayState(false); // turn OFF (open) relay
+          Serial.println("TRIPPED: average current exceeded threshold -> relay OFF");
+        } else {
+          // If not tripped we keep relay on by default (optional). If you prefer manual control, comment this out.
+          if (!relayOn) {
+            setRelayState(true);
+            Serial.println("Relay enabled (normal operation)");
+          }
+        }
+      } else {
+        // Currently tripped: re-enable only after avg drops below reset threshold
+        if (avgCurrent <= reset_mA) {
+          tripped = false;
+          setRelayState(true); // auto re-enable; remove if you want manual reset
+          Serial.println("RESET: average current below reset threshold -> relay ON (auto-reconnect)");
+        } else {
+          // remain tripped and ensure relay is OFF
+          if (relayOn) setRelayState(false);
+        }
+      }
+
+      // Reset accumulators
+      totalBusVoltage = 0;
+      totalCurrent    = 0;
+      totalPower      = 0;
+      sampleCount     = 0;
+    }
+  }
+}
