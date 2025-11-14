@@ -5,7 +5,7 @@ Adafruit_INA219 ina219;
 
 // how many readings to average over
 const int sampleInterval = 1000;   // 1 second per reading
-const int averagePeriod  = 5000;   // 5 seconds
+const int averagePeriod  = 3000;   // 3 seconds
 const int numSamples     = averagePeriod / sampleInterval;
 
 float totalBusVoltage = 0;
@@ -20,7 +20,7 @@ const int relayPin = 7;            // Arduino pin connected to relay IN
 const bool relayActiveLow = false; // true if module is LOW-trigger (IN LOW = relay ON)
 
 // Trip thresholds (in mA)
-const float trip_mA  = 175.0; // trip when 5-second average >= this (175 mA = 0.175 A)
+const float trip_mA  = 160.0; // trip when 3-second average >= this (160 mA = 0.16 A)
 const float reset_mA = 150.0; // reset when average <= this (150 mA = 0.15 A)
 
 // Inrush ignore: ignore trip checks for a short time after turning relay ON
