@@ -83,7 +83,7 @@ void loop() {
       float avgCurrent    = totalCurrent / sampleCount;
       float avgPower      = totalPower / sampleCount;
 
-      Serial.println("----- 5 Second Average -----");
+      Serial.println("----- 3 Second Average -----");
       Serial.print("Average Bus Voltage: "); Serial.print(avgBusVoltage); Serial.println(" V");
       Serial.print("Average Current:     "); Serial.print(avgCurrent);    Serial.println(" mA");
       Serial.print("Average Power:       "); Serial.print(avgPower);      Serial.println(" mW");
