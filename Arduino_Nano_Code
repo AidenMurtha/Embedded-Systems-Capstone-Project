@@ -20,8 +20,8 @@ const int relayPin = 7;            // Arduino pin connected to relay IN
 const bool relayActiveLow = false; // true if module is LOW-trigger (IN LOW = relay ON)
 
 // Trip thresholds (in mA)
-const float trip_mA  = 150.0; // trip when 5-second average >= this (150 mA = 0.15 A)
-const float reset_mA = 125.0; // reset when average <= this (125 mA = 0.125 A)
+const float trip_mA  = 175.0; // trip when 5-second average >= this (175 mA = 0.175 A)
+const float reset_mA = 150.0; // reset when average <= this (150 mA = 0.15 A)
 
 // Inrush ignore: ignore trip checks for a short time after turning relay ON
 const unsigned long inrushIgnoreMs = 500; // 0.5 s
