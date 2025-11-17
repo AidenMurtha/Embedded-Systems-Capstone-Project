@@ -11,24 +11,22 @@
 <p id="B_amp"></p>
 
 <script>
-const url = "https://spreadsheets.google.com/feeds/list/1TslxI4Cq06fwRcLEwZox4UEECPoM1mn1IMGDD2ol9LA/od6/public/values?alt=json";
+const url = "https://script.google.com/macros/s/AKfycbyvF2WR0J_0HhfQ9U-8h6Mst2L-A8nj-7LnUjQX8bJVmq4P766D-hbSp2P8Eob9ImV-BQ/exec?mode=json";
 
 function update() {
   fetch(url)
     .then(r => r.json())
     .then(data => {
-      const entries = data.feed.entry;
 
-      let A = entries.find(e => e['gsx$device'].$t === "A");
-      let B = entries.find(e => e['gsx$device'].$t === "B");
+      // Device A
+      document.getElementById("A_time").innerText = data.A[0];
+      document.getElementById("A_volt").innerText = data.A[2];
+      document.getElementById("A_amp").innerText  = data.A[3];
 
-      document.getElementById("A_time").innerText = A.gsx$timestamp.$t;
-      document.getElementById("A_volt").innerText = A.gsx$voltage.$t;
-      document.getElementById("A_amp").innerText = A.gsx$current.$t;
-
-      document.getElementById("B_time").innerText = B.gsx$timestamp.$t;
-      document.getElementById("B_volt").innerText = B.gsx$voltage.$t;
-      document.getElementById("B_amp").innerText = B.gsx$current.$t;
+      // Device B
+      document.getElementById("B_time").innerText = data.B[0];
+      document.getElementById("B_volt").innerText = data.B[2];
+      document.getElementById("B_amp").innerText  = data.B[3];
     });
 }
 
@@ -37,3 +35,4 @@ setInterval(update, 4000);
 </script>
 </body>
 </html>
+
