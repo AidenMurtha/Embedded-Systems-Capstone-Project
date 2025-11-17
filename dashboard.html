@@ -1,0 +1,39 @@
+<html>
+<body>
+<h2>Device A</h2>
+<p id="A_time"></p>
+<p id="A_volt"></p>
+<p id="A_amp"></p>
+
+<h2>Device B</h2>
+<p id="B_time"></p>
+<p id="B_volt"></p>
+<p id="B_amp"></p>
+
+<script>
+const url = "https://spreadsheets.google.com/feeds/list/1TslxI4Cq06fwRcLEwZox4UEECPoM1mn1IMGDD2ol9LA/od6/public/values?alt=json";
+
+function update() {
+  fetch(url)
+    .then(r => r.json())
+    .then(data => {
+      const entries = data.feed.entry;
+
+      let A = entries.find(e => e['gsx$device'].$t === "A");
+      let B = entries.find(e => e['gsx$device'].$t === "B");
+
+      document.getElementById("A_time").innerText = A.gsx$timestamp.$t;
+      document.getElementById("A_volt").innerText = A.gsx$voltage.$t;
+      document.getElementById("A_amp").innerText = A.gsx$current.$t;
+
+      document.getElementById("B_time").innerText = B.gsx$timestamp.$t;
+      document.getElementById("B_volt").innerText = B.gsx$voltage.$t;
+      document.getElementById("B_amp").innerText = B.gsx$current.$t;
+    });
+}
+
+update();
+setInterval(update, 4000);
+</script>
+</body>
+</html>
