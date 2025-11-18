@@ -1,44 +1,175 @@
+<!DOCTYPE html>
 <html>
+<head>
+  <meta charset="UTF-8">
+  <title>Smart Home Power Dashboard</title>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f2f2f2;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* LEFT PANEL */
+    .left {
+      width: 40%;
+      padding: 25px;
+      border-right: 3px solid #d0d0d0;
+      overflow-y: auto;
+    }
+
+    .section-title {
+      font-size: 30px;
+      font-weight: bold;
+      margin-bottom: 25px;
+      text-align: center;
+    }
+
+    .card {
+      background: white;
+      padding: 20px;
+      margin-bottom: 25px;
+      border-radius: 14px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+    }
+
+    .card-title {
+      font-size: 22px;
+      font-weight: bold;
+      margin-bottom: 15px;
+      text-align: center;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #ddd;
+      font-size: 16px;
+    }
+
+    .row:last-child {
+      border-bottom: none;
+    }
+
+    /* RIGHT PANEL */
+    .right {
+      width: 60%;
+      padding: 25px;
+      overflow-y: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+    }
+
+    th {
+      background: #333;
+      color: white;
+      padding: 12px;
+      font-size: 16px;
+    }
+
+    td {
+      padding: 10px;
+      border-bottom: 1px solid #ddd;
+      font-size: 14px;
+    }
+
+    tr:nth-child(even) {
+      background: #f7f7f7;
+    }
+
+  </style>
+</head>
 <body>
-<h2>Device A</h2>
-<p id="A_time"></p>
-<p id="A_volt"></p>
-<p id="A_amp"></p>
 
-<h2>Device B</h2>
-<p id="B_time"></p>
-<p id="B_volt"></p>
-<p id="B_amp"></p>
+  <!-- LEFT PANEL -->
+  <div class="left">
+    <div class="section-title">Live Device Readings</div>
 
-<script>
-const url = "https://script.google.com/macros/s/AKfycbyPHmRlMgO5JB6sLPCsCE6HTcCwijIZd26-lILoutbVRfCFrLsDankxUmlznjzmnl95/exec?mode=json";
+    <div class="card">
+      <div class="card-title">Device A</div>
+      <div class="row"><span>Timestamp:</span> <span id="A_time"></span></div>
+      <div class="row"><span>Voltage:</span> <span id="A_volt"></span></div>
+      <div class="row"><span>Current:</span> <span id="A_amp"></span></div>
+    </div>
 
-function update() {
-  fetch(url)
-    .then(r => r.json())
-    .then(data => {
+    <div class="card">
+      <div class="card-title">Device B</div>
+      <div class="row"><span>Timestamp:</span> <span id="B_time"></span></div>
+      <div class="row"><span>Voltage:</span> <span id="B_volt"></span></div>
+      <div class="row"><span>Current:</span> <span id="B_amp"></span></div>
+    </div>
+  </div>
 
-      // A device
-      document.getElementById("A_time").innerText = data.A[0];
-      document.getElementById("A_volt").innerText = data.A[2];
-      document.getElementById("A_amp").innerText  = data.A[3];
+  <!-- RIGHT PANEL -->
+  <div class="right">
+    <div class="section-title">History (Last 50 Entries)</div>
 
-      // B device
-      document.getElementById("B_time").innerText = data.B[0];
-      document.getElementById("B_volt").innerText = data.B[2];
-      document.getElementById("B_amp").innerText  = data.B[3];
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Device</th>
+          <th>Voltage</th>
+          <th>Current</th>
+        </tr>
+      </thead>
+      <tbody id="historyBody">
+        <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
 
-      console.log("Updated dashboard", data);
-    })
-    .catch(err => console.error("Fetch error:", err));
-}
+  <!-- DATA SCRIPT -->
+  <script>
+    const url = "https://script.google.com/macros/s/AKfycbyPHmRlMgO5JB6sLPCsCE6HTcCwijIZd26-lILoutbVRfCFrLsDankxUmlznjzmnl95/exec?mode=json";
 
-update();
-setInterval(update, 3000);
-</script>
+    function update() {
+      fetch(url)
+        .then(r => r.json())
+        .then(data => {
+
+          // Live A
+          document.getElementById("A_time").innerText = data.A[0];
+          document.getElementById("A_volt").innerText = data.A[2];
+          document.getElementById("A_amp").innerText  = data.A[3];
+
+          // Live B
+          document.getElementById("B_time").innerText = data.B[0];
+          document.getElementById("B_volt").innerText = data.B[2];
+          document.getElementById("B_amp").innerText  = data.B[3];
+
+          // History Table
+          let out = "";
+          data.history.slice().reverse().forEach(row => {
+            out += `
+              <tr>
+                <td>${row[0]}</td>
+                <td>${row[1]}</td>
+                <td>${row[2]}</td>
+                <td>${row[3]}</td>
+              </tr>`;
+          });
+
+          document.getElementById("historyBody").innerHTML = out;
+        })
+        .catch(err => console.error("Fetch error:", err));
+    }
+
+    update();
+    setInterval(update, 3000);
+  </script>
+
 </body>
 </html>
-
-
-
-
