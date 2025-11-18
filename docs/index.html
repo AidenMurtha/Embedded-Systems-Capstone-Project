@@ -18,23 +18,27 @@ function update() {
     .then(r => r.json())
     .then(data => {
 
-      // Device A
+      // A device
       document.getElementById("A_time").innerText = data.A[0];
       document.getElementById("A_volt").innerText = data.A[2];
       document.getElementById("A_amp").innerText  = data.A[3];
 
-      // Device B
+      // B device
       document.getElementById("B_time").innerText = data.B[0];
       document.getElementById("B_volt").innerText = data.B[2];
       document.getElementById("B_amp").innerText  = data.B[3];
-    });
+
+      console.log("Updated dashboard", data);
+    })
+    .catch(err => console.error("Fetch error:", err));
 }
 
 update();
-setInterval(update, 4000);
+setInterval(update, 3000);
 </script>
 </body>
 </html>
+
 
 
 
