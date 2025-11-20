@@ -7,7 +7,7 @@ Adafruit_INA219 ina2(0x41);
 
 // averaging settings
 const int sampleInterval = 1000;
-const int averagePeriod  = 5000;
+const int averagePeriod  = 3000;
 const int numSamples     = averagePeriod / sampleInterval;
 
 // Relay setup
@@ -43,6 +43,7 @@ void setRelay(bool on) {
 
 void setup() {
   Serial.begin(9600);
+  Serial1.begin(9600);   // <<<<<< ADD THIS FOR TX/RX
   Serial.println("Dual INA219 Monitor + Relay Trip (State Machine)");
 
   pinMode(relayPin, OUTPUT);
@@ -114,7 +115,7 @@ bool sampleSensors(float &avgC1, float &avgV1, float &avgP1, float &avgC2, float
     avgC2 = totalCurrent2 / sampleCount;
     avgP2 = totalPower2 / sampleCount;
 
-    Serial.println("----- 5 Second Averages -----");
+    Serial.println("----- 3 Second Averages -----");
 
     Serial.print("INA1 Avg V: "); Serial.println(avgV1);
     Serial.print("INA1 Avg I: "); Serial.println(avgC1);
@@ -126,6 +127,18 @@ bool sampleSensors(float &avgC1, float &avgV1, float &avgP1, float &avgC2, float
     Serial.print("INA2 Avg P: "); Serial.println(avgP2);
 
     Serial.println("-----------------------------");
+
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    // SEND AVERAGES TO ESP32 VIA SERIAL1 (TX/RX)
+    // Format: avgC1,avgV1,avgP1,avgC2,avgV2,avgP2
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    Serial1.print(avgC1); Serial1.print(",");
+    Serial1.print(avgV1); Serial1.print(",");
+    Serial1.print(avgP1); Serial1.print(",");
+    Serial1.print(avgC2); Serial1.print(",");
+    Serial1.print(avgV2); Serial1.print(",");
+    Serial1.println(avgP2);   // ends with newline
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
     // Reset accumulators
     totalBus1 = totalCurrent1 = totalPower1 = 0;
