@@ -1,128 +1,201 @@
 #include <Wire.h>
 #include <Adafruit_INA219.h>
 
-Adafruit_INA219 ina219;
+// TWO INA219 MODULES
+Adafruit_INA219 ina1(0x40);
+Adafruit_INA219 ina2(0x41);
 
-// how many readings to average over
-const int sampleInterval = 1000;   // 1 second per reading
-const int averagePeriod  = 3000;   // 3 seconds
+// averaging settings
+const int sampleInterval = 1000;
+const int averagePeriod  = 5000;
 const int numSamples     = averagePeriod / sampleInterval;
 
-float totalBusVoltage = 0;
-float totalCurrent    = 0;
-float totalPower      = 0;
-int sampleCount       = 0;
+// Relay setup
+const int relayPin = 7;
+const bool relayActiveLow = false;
 
+const float trip_mA  = 160.0;
+const float reset_mA = 150.0;
+const unsigned long inrushIgnoreMs = 500;
+
+// accumulator values
+float totalBus1 = 0, totalCurrent1 = 0, totalPower1 = 0;
+float totalBus2 = 0, totalCurrent2 = 0, totalPower2 = 0;
+int sampleCount = 0;
 unsigned long lastSampleTime = 0;
-
-// ---------- Relay config ----------
-const int relayPin = 7;            // Arduino pin connected to relay IN
-const bool relayActiveLow = false; // true if module is LOW-trigger (IN LOW = relay ON)
-
-// Trip thresholds (in mA)
-const float trip_mA  = 160.0; // trip when 3-second average >= this (160 mA = 0.16 A)
-const float reset_mA = 150.0; // reset when average <= this (150 mA = 0.15 A)
-
-// Inrush ignore: ignore trip checks for a short time after turning relay ON
-const unsigned long inrushIgnoreMs = 500; // 0.5 s
-
-// state variables
-bool relayOn = false;
-bool tripped = false;
 unsigned long lastRelayOnTime = 0;
+
+// ---------- STATE MACHINE ----------
+enum SystemState {
+  STATE_IDLE,        // relay OFF
+  STATE_RELAY_ON,    // relay ON, monitoring
+  STATE_TRIPPED      // relay OFF due to overcurrent
+};
+
+SystemState state = STATE_IDLE;
+
+
+void setRelay(bool on) {
+  digitalWrite(relayPin, relayActiveLow ? !on : on);
+  if (on) lastRelayOnTime = millis();
+}
+
 
 void setup() {
   Serial.begin(9600);
-  Serial.println("INA219 Average Voltage Monitor + Relay Trip");
+  Serial.println("Dual INA219 Monitor + Relay Trip (State Machine)");
 
-  // Relay pin setup: ensure OFF at startup
   pinMode(relayPin, OUTPUT);
-  if (relayActiveLow) digitalWrite(relayPin, HIGH); else digitalWrite(relayPin, LOW);
-  relayOn = false;
 
-  if (!ina219.begin()) {
-    Serial.println("Failed to find INA219 chip");
-    while (1) { delay(10); }
+  // Relay starts OFF
+  setRelay(false);
+
+  // INA219 setup
+  if (!ina1.begin()) {
+    Serial.println("INA219 #1 not found!");
+    while (1);
   }
+  ina1.setCalibration_32V_2A();
 
-  ina219.setCalibration_32V_2A(); // Calibrate for 0–32V, up to 2A
+  if (!ina2.begin()) {
+    Serial.println("INA219 #2 not found!");
+    while (1);
+  }
+  ina2.setCalibration_32V_2A();
 }
 
-void setRelayState(bool on) {
-  if (relayActiveLow) digitalWrite(relayPin, on ? LOW : HIGH);
-  else              digitalWrite(relayPin, on ? HIGH : LOW);
 
-  if (on) lastRelayOnTime = millis();
-  relayOn = on;
-}
-
-void loop() {
+// Read INA219, accumulate averages
+bool sampleSensors(float &avgC1, float &avgV1, float &avgP1, float &avgC2, float &avgV2, float &avgP2) 
+{
   unsigned long currentMillis = millis();
 
-  // Take a reading every second
-  if (currentMillis - lastSampleTime >= sampleInterval) {
-    lastSampleTime = currentMillis;
+  if (currentMillis - lastSampleTime < sampleInterval)
+    return false;
 
-    float busVoltage = ina219.getBusVoltage_V();
-    float current_mA = ina219.getCurrent_mA(); // in mA
-    float power_mW   = ina219.getPower_mW();
+  lastSampleTime = currentMillis;
 
-    totalBusVoltage += busVoltage;
-    totalCurrent    += current_mA;
-    totalPower      += power_mW;
-    sampleCount++;
+  // Read sensor 1
+  float v1 = ina1.getBusVoltage_V();
+  float c1 = ina1.getCurrent_mA();
+  float p1 = ina1.getPower_mW();
 
-    Serial.print("Sample "); Serial.print(sampleCount);
-    Serial.print(" I(mA): "); Serial.print(current_mA);
-    Serial.print("  RelayOn: "); Serial.print(relayOn ? "Y" : "N");
-    Serial.print("  Tripped: "); Serial.println(tripped ? "Y" : "N");
+  // Read sensor 2
+  float v2 = ina2.getBusVoltage_V();
+  float c2 = ina2.getCurrent_mA();
+  float p2 = ina2.getPower_mW();
 
-    // After numSamples (5 seconds), calculate and act on averages
-    if (sampleCount >= numSamples) {
-      float avgBusVoltage = totalBusVoltage / sampleCount;
-      float avgCurrent    = totalCurrent / sampleCount;
-      float avgPower      = totalPower / sampleCount;
+  // Accumulate
+  totalBus1    += v1;
+  totalCurrent1 += c1;
+  totalPower1   += p1;
 
-      Serial.println("----- 3 Second Average -----");
-      Serial.print("Average Bus Voltage: "); Serial.print(avgBusVoltage); Serial.println(" V");
-      Serial.print("Average Current:     "); Serial.print(avgCurrent);    Serial.println(" mA");
-      Serial.print("Average Power:       "); Serial.print(avgPower);      Serial.println(" mW");
-      Serial.println("----------------------------");
+  totalBus2    += v2;
+  totalCurrent2 += c2;
+  totalPower2   += p2;
 
-      // Trip logic with hysteresis and inrush ignore
-      bool ignoreDueToInrush = false;
-      if (relayOn && (millis() - lastRelayOnTime) < inrushIgnoreMs) ignoreDueToInrush = true;
+  sampleCount++;
 
-      if (!tripped) {
-        // Normal operation: if avg >= trip threshold (and not ignored), trip and open relay
-        if ((!ignoreDueToInrush) && (avgCurrent >= trip_mA)) {
-          tripped = true;
-          setRelayState(false); // turn OFF (open) relay
-          Serial.println("TRIPPED: average current exceeded threshold -> relay OFF");
-        } else {
-          // If not tripped we keep relay on by default (optional). If you prefer manual control, comment this out.
-          if (!relayOn) {
-            setRelayState(true);
-            Serial.println("Relay enabled (normal operation)");
-          }
-        }
-      } else {
-        // Currently tripped: re-enable only after avg drops below reset threshold
-        if (avgCurrent <= reset_mA) {
-          tripped = false;
-          setRelayState(true); // auto re-enable; remove if you want manual reset
-          Serial.println("RESET: average current below reset threshold -> relay ON (auto-reconnect)");
-        } else {
-          // remain tripped and ensure relay is OFF
-          if (relayOn) setRelayState(false);
-        }
-      }
+  // Debug live readings
+  Serial.print("Sample "); Serial.println(sampleCount);
+  Serial.print("INA1 I(mA): "); Serial.print(c1);
+  Serial.print("  V: "); Serial.println(v1);
 
-      // Reset accumulators
-      totalBusVoltage = 0;
-      totalCurrent    = 0;
-      totalPower      = 0;
-      sampleCount     = 0;
-    }
+  Serial.print("INA2 I(mA): "); Serial.print(c2);
+  Serial.print("  V: "); Serial.println(v2);
+
+
+  if (sampleCount >= numSamples) {
+    avgV1 = totalBus1 / sampleCount;
+    avgC1 = totalCurrent1 / sampleCount;
+    avgP1 = totalPower1 / sampleCount;
+
+    avgV2 = totalBus2 / sampleCount;
+    avgC2 = totalCurrent2 / sampleCount;
+    avgP2 = totalPower2 / sampleCount;
+
+    Serial.println("----- 5 Second Averages -----");
+
+    Serial.print("INA1 Avg V: "); Serial.println(avgV1);
+    Serial.print("INA1 Avg I: "); Serial.println(avgC1);
+    Serial.print("INA1 Avg P: "); Serial.println(avgP1);
+
+    Serial.println();
+    Serial.print("INA2 Avg V: "); Serial.println(avgV2);
+    Serial.print("INA2 Avg I: "); Serial.println(avgC2);
+    Serial.print("INA2 Avg P: "); Serial.println(avgP2);
+
+    Serial.println("-----------------------------");
+
+    // Reset accumulators
+    totalBus1 = totalCurrent1 = totalPower1 = 0;
+    totalBus2 = totalCurrent2 = totalPower2 = 0;
+    sampleCount = 0;
+
+    return true;
+  }
+
+  return false;
+}
+
+
+// ------------ STATE HANDLERS ------------
+void handleIdle(float avgC1) {
+  Serial.println("[STATE_IDLE] Relay OFF");
+
+  // Always attempt to turn relay on
+  setRelay(true);
+  state = STATE_RELAY_ON;
+}
+
+
+void handleRelayOn(float avgC1) {
+  Serial.println("[STATE_RELAY_ON] Relay ON");
+
+  bool ignoreInrush = (millis() - lastRelayOnTime < inrushIgnoreMs);
+
+  if (!ignoreInrush && avgC1 >= trip_mA) {
+    Serial.println(">>> TRIPPED <<<");
+    setRelay(false);
+    state = STATE_TRIPPED;
+  }
+}
+
+
+void handleTripped(float avgC1) {
+  Serial.println("[STATE_TRIPPED] Overcurrent");
+
+  if (avgC1 <= reset_mA) {
+    Serial.println(">>> RESET <<<");
+    setRelay(true);
+    state = STATE_RELAY_ON;
+  }
+}
+
+
+// ------------ MAIN LOOP ------------
+void loop() {
+  float avgC1 = 0, avgV1 = 0, avgP1 = 0;
+  float avgC2 = 0, avgV2 = 0, avgP2 = 0;
+
+  bool ready = sampleSensors(avgC1, avgV1, avgP1,
+                             avgC2, avgV2, avgP2);
+
+  if (!ready)
+    return;
+
+  // State transitions
+  switch (state) {
+    case STATE_IDLE:
+      handleIdle(avgC1);
+      break;
+
+    case STATE_RELAY_ON:
+      handleRelayOn(avgC1);
+      break;
+
+    case STATE_TRIPPED:
+      handleTripped(avgC1);
+      break;
   }
 }
