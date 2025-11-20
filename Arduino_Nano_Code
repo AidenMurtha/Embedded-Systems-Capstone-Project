@@ -42,8 +42,8 @@ void setRelay(bool on) {
 
 
 void setup() {
-  Serial.begin(9600);
-  Serial1.begin(9600);   // <<<<<< ADD THIS FOR TX/RX
+  Serial.begin(115200);
+  Serial1.begin(115200);   // <<<<<< ADD THIS FOR TX/RX
   Serial.println("Dual INA219 Monitor + Relay Trip (State Machine)");
 
   pinMode(relayPin, OUTPUT);
@@ -67,7 +67,7 @@ void setup() {
 
 
 // Read INA219, accumulate averages
-bool sampleSensors(float &avgC1, float &avgV1, float &avgP1, float &avgC2, float &avgV2, float &avgP2) 
+bool sampleSensors(float &avgI1, float &avgV1, float &avgP1, float &avgI2, float &avgV2, float &avgP2) 
 {
   unsigned long currentMillis = millis();
 
@@ -78,65 +78,65 @@ bool sampleSensors(float &avgC1, float &avgV1, float &avgP1, float &avgC2, float
 
   // Read sensor 1
   float v1 = ina1.getBusVoltage_V();
-  float c1 = ina1.getCurrent_mA();
+  float i1 = ina1.getCurrent_mA();
   float p1 = ina1.getPower_mW();
 
   // Read sensor 2
   float v2 = ina2.getBusVoltage_V();
-  float c2 = ina2.getCurrent_mA();
+  float i2 = ina2.getCurrent_mA();
   float p2 = ina2.getPower_mW();
 
   // Accumulate
   totalBus1    += v1;
-  totalCurrent1 += c1;
+  totalCurrent1 += i1;
   totalPower1   += p1;
 
   totalBus2    += v2;
-  totalCurrent2 += c2;
+  totalCurrent2 += i2;
   totalPower2   += p2;
 
   sampleCount++;
 
   // Debug live readings
   Serial.print("Sample "); Serial.println(sampleCount);
-  Serial.print("INA1 I(mA): "); Serial.print(c1);
+  Serial.print("INA1 I(mA): "); Serial.print(i1);
   Serial.print("  V: "); Serial.println(v1);
 
-  Serial.print("INA2 I(mA): "); Serial.print(c2);
+  Serial.print("INA2 I(mA): "); Serial.print(i2);
   Serial.print("  V: "); Serial.println(v2);
 
 
   if (sampleCount >= numSamples) {
     avgV1 = totalBus1 / sampleCount;
-    avgC1 = totalCurrent1 / sampleCount;
+    avgI1 = totalCurrent1 / sampleCount;
     avgP1 = totalPower1 / sampleCount;
 
     avgV2 = totalBus2 / sampleCount;
-    avgC2 = totalCurrent2 / sampleCount;
+    avgI2 = totalCurrent2 / sampleCount;
     avgP2 = totalPower2 / sampleCount;
 
     Serial.println("----- 3 Second Averages -----");
 
     Serial.print("INA1 Avg V: "); Serial.println(avgV1);
-    Serial.print("INA1 Avg I: "); Serial.println(avgC1);
+    Serial.print("INA1 Avg I: "); Serial.println(avgI1);
     Serial.print("INA1 Avg P: "); Serial.println(avgP1);
 
     Serial.println();
     Serial.print("INA2 Avg V: "); Serial.println(avgV2);
-    Serial.print("INA2 Avg I: "); Serial.println(avgC2);
+    Serial.print("INA2 Avg I: "); Serial.println(avgI2);
     Serial.print("INA2 Avg P: "); Serial.println(avgP2);
 
     Serial.println("-----------------------------");
 
     // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     // SEND AVERAGES TO ESP32 VIA SERIAL1 (TX/RX)
-    // Format: avgC1,avgV1,avgP1,avgC2,avgV2,avgP2
+    // Format: avgI1,avgV1,avgP1,avgI2,avgV2,avgP2
     // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    Serial1.print(avgC1); Serial1.print(",");
     Serial1.print(avgV1); Serial1.print(",");
+    Serial1.print(avgI1); Serial1.print(",");
     Serial1.print(avgP1); Serial1.print(",");
-    Serial1.print(avgC2); Serial1.print(",");
     Serial1.print(avgV2); Serial1.print(",");
+    Serial1.print(avgI2); Serial1.print(",");
     Serial1.println(avgP2);   // ends with newline
     // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
@@ -153,7 +153,7 @@ bool sampleSensors(float &avgC1, float &avgV1, float &avgP1, float &avgC2, float
 
 
 // ------------ STATE HANDLERS ------------
-void handleIdle(float avgC1) {
+void handleIdle(float avgI1) {
   Serial.println("[STATE_IDLE] Relay OFF");
 
   // Always attempt to turn relay on
@@ -162,12 +162,12 @@ void handleIdle(float avgC1) {
 }
 
 
-void handleRelayOn(float avgC1) {
+void handleRelayOn(float avgI1) {
   Serial.println("[STATE_RELAY_ON] Relay ON");
 
   bool ignoreInrush = (millis() - lastRelayOnTime < inrushIgnoreMs);
 
-  if (!ignoreInrush && avgC1 >= trip_mA) {
+  if (!ignoreInrush && avgI1 >= trip_mA) {
     Serial.println(">>> TRIPPED <<<");
     setRelay(false);
     state = STATE_TRIPPED;
@@ -175,10 +175,10 @@ void handleRelayOn(float avgC1) {
 }
 
 
-void handleTripped(float avgC1) {
+void handleTripped(float avgI1) {
   Serial.println("[STATE_TRIPPED] Overcurrent");
 
-  if (avgC1 <= reset_mA) {
+  if (avgI1 <= reset_mA) {
     Serial.println(">>> RESET <<<");
     setRelay(true);
     state = STATE_RELAY_ON;
@@ -188,11 +188,11 @@ void handleTripped(float avgC1) {
 
 // ------------ MAIN LOOP ------------
 void loop() {
-  float avgC1 = 0, avgV1 = 0, avgP1 = 0;
-  float avgC2 = 0, avgV2 = 0, avgP2 = 0;
+  float avgI1 = 0, avgV1 = 0, avgP1 = 0;
+  float avgI2 = 0, avgV2 = 0, avgP2 = 0;
 
-  bool ready = sampleSensors(avgC1, avgV1, avgP1,
-                             avgC2, avgV2, avgP2);
+  bool ready = sampleSensors(avgI1, avgV1, avgP1,
+                             avgI2, avgV2, avgP2);
 
   if (!ready)
     return;
@@ -200,15 +200,15 @@ void loop() {
   // State transitions
   switch (state) {
     case STATE_IDLE:
-      handleIdle(avgC1);
+      handleIdle(avgI1);
       break;
 
     case STATE_RELAY_ON:
-      handleRelayOn(avgC1);
+      handleRelayOn(avgI1);
       break;
 
     case STATE_TRIPPED:
-      handleTripped(avgC1);
+      handleTripped(avgI1);
       break;
   }
 }
