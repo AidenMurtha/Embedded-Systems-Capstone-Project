@@ -6,9 +6,12 @@ Adafruit_INA219 ina1(0x40);
 Adafruit_INA219 ina2(0x41);
 
 // averaging settings
-const int sampleInterval = 1000;
-const int averagePeriod  = 3000;
-const int numSamples     = averagePeriod / sampleInterval;
+// --- 1 kHz sampling ---
+const unsigned long sampleIntervalMicros = 1000; // 1 ms = 1 kHz
+const int averagePeriodSec = 3;
+const int numSamples = averagePeriodSec * 1000; // 3000 samples in 3 sec
+unsigned long lastSampleMicros = 0;
+
 
 // Relay setup
 const int relayPin = 7;
@@ -70,89 +73,74 @@ void setup() {
 
 
 // Read INA219, accumulate averages
-bool sampleSensors(float &avgI1, float &avgV1, float &avgP1, float &avgI2, float &avgV2, float &avgP2) 
+bool sampleSensors(float &avgI1, float &avgV1, float &avgP1,
+                   float &avgI2, float &avgV2, float &avgP2)
 {
-  unsigned long currentMillis = millis();
+    unsigned long now = micros();
+    if (now - lastSampleMicros < sampleIntervalMicros) return false;
+    lastSampleMicros = now;
 
-  if (currentMillis - lastSampleTime < sampleInterval)
+    // Read INA219 sensors
+    float v1 = ina1.getBusVoltage_V();
+    float i1 = ina1.getCurrent_mA();
+    float p1 = ina1.getPower_mW();
+
+    float v2 = ina2.getBusVoltage_V();
+    float i2 = ina2.getCurrent_mA();
+    float p2 = ina2.getPower_mW();
+
+    // Accumulate totals
+    totalBus1     += v1;
+    totalCurrent1 += i1;
+    totalPower1   += p1;
+
+    totalBus2     += v2;
+    totalCurrent2 += i2;
+    totalPower2   += p2;
+
+    sampleCount++;
+
+    if (sampleCount >= numSamples)
+    {
+        // Compute 3-second averages
+        avgV1 = totalBus1 / sampleCount;
+        avgI1 = totalCurrent1 / sampleCount;
+        avgP1 = totalPower1 / sampleCount;
+
+        avgV2 = totalBus2 / sampleCount;
+        avgI2 = totalCurrent2 / sampleCount;
+        avgP2 = totalPower2 / sampleCount;
+
+        // Reset accumulators
+        totalBus1 = totalCurrent1 = totalPower1 = 0;
+        totalBus2 = totalCurrent2 = totalPower2 = 0;
+        sampleCount = 0;
+
+        // Print averages once every 3 seconds
+        Serial.println("----- 3 Second Averages -----");
+        Serial.print("INA1 Avg V: "); Serial.println(avgV1);
+        Serial.print("INA1 Avg I: "); Serial.println(avgI1);
+        Serial.print("INA1 Avg P: "); Serial.println(avgP1);
+
+        Serial.print("INA2 Avg V: "); Serial.println(avgV2);
+        Serial.print("INA2 Avg I: "); Serial.println(avgI2);
+        Serial.print("INA2 Avg P: "); Serial.println(avgP2);
+        Serial.println("-----------------------------");
+
+        // Send to ESP32
+        Serial1.print(avgV1); Serial1.print(",");
+        Serial1.print(avgI1); Serial1.print(",");
+        Serial1.print(avgP1); Serial1.print(",");
+        Serial1.print(avgV2); Serial1.print(",");
+        Serial1.print(avgI2); Serial1.print(",");
+        Serial1.println(avgP2);
+
+        return true;
+    }
+
     return false;
-
-  lastSampleTime = currentMillis;
-
-  // Read sensor 1
-  float v1 = ina1.getBusVoltage_V();
-  float i1 = ina1.getCurrent_mA();
-  float p1 = ina1.getPower_mW();
-
-  // Read sensor 2
-  float v2 = ina2.getBusVoltage_V();
-  float i2 = ina2.getCurrent_mA();
-  float p2 = ina2.getPower_mW();
-
-  // Accumulate
-  totalBus1    += v1;
-  totalCurrent1 += i1;
-  totalPower1   += p1;
-
-  totalBus2    += v2;
-  totalCurrent2 += i2;
-  totalPower2   += p2;
-
-  sampleCount++;
-
-  // Debug live readings
-  Serial.print("Sample "); Serial.println(sampleCount);
-  Serial.print("INA1 I(mA): "); Serial.print(i1);
-  Serial.print("  V: "); Serial.println(v1);
-
-  Serial.print("INA2 I(mA): "); Serial.print(i2);
-  Serial.print("  V: "); Serial.println(v2);
-
-
-  if (sampleCount >= numSamples) {
-    avgV1 = totalBus1 / sampleCount;
-    avgI1 = totalCurrent1 / sampleCount;
-    avgP1 = totalPower1 / sampleCount;
-
-    avgV2 = totalBus2 / sampleCount;
-    avgI2 = totalCurrent2 / sampleCount;
-    avgP2 = totalPower2 / sampleCount;
-
-    Serial.println("----- 3 Second Averages -----");
-
-    Serial.print("INA1 Avg V: "); Serial.println(avgV1);
-    Serial.print("INA1 Avg I: "); Serial.println(avgI1);
-    Serial.print("INA1 Avg P: "); Serial.println(avgP1);
-
-    Serial.println();
-    Serial.print("INA2 Avg V: "); Serial.println(avgV2);
-    Serial.print("INA2 Avg I: "); Serial.println(avgI2);
-    Serial.print("INA2 Avg P: "); Serial.println(avgP2);
-
-    Serial.println("-----------------------------");
-
-    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    // SEND AVERAGES TO ESP32 VIA SERIAL1 (TX/RX)
-    // Format: avgI1,avgV1,avgP1,avgI2,avgV2,avgP2
-    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    Serial1.print(avgV1); Serial1.print(",");
-    Serial1.print(avgI1); Serial1.print(",");
-    Serial1.print(avgP1); Serial1.print(",");
-    Serial1.print(avgV2); Serial1.print(",");
-    Serial1.print(avgI2); Serial1.print(",");
-    Serial1.println(avgP2);   // ends with newline
-    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
-    // Reset accumulators
-    totalBus1 = totalCurrent1 = totalPower1 = 0;
-    totalBus2 = totalCurrent2 = totalPower2 = 0;
-    sampleCount = 0;
-
-    return true;
-  }
-
-  return false;
 }
+
 
 
 // ------------ STATE HANDLERS ------------
