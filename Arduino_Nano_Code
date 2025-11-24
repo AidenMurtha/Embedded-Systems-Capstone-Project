@@ -34,6 +34,9 @@ enum SystemState {
 
 SystemState state = STATE_IDLE;
 
+enum OffReason { NONE, OVERCURRENT, PS5_OFF };
+OffReason offReason = NONE;
+
 
 void setRelay(bool on) {
   digitalWrite(relayPin, relayActiveLow ? !on : on);
@@ -188,27 +191,56 @@ void handleTripped(float avgI1) {
 
 // ------------ MAIN LOOP ------------
 void loop() {
+  // --- Check for PS5 commands via Serial ---
+  if (Serial1.available()) {
+    String cmd = Serial1.readStringUntil('\n');
+    cmd.trim();
+
+    if (cmd == "ON") {
+      setRelay(true);
+      offReason = NONE;          // clear PS5 override
+      state = STATE_RELAY_ON;
+      Serial.println("[Nano] Relay ON by PS5");
+    } 
+    else if (cmd == "OFF") {
+      setRelay(false);
+      offReason = PS5_OFF;       // PS5 forced OFF
+      state = STATE_IDLE;
+      Serial.println("[Nano] Relay OFF by PS5");
+    }
+  }
+
+  // --- Sample INA219 sensors ---
   float avgI1 = 0, avgV1 = 0, avgP1 = 0;
   float avgI2 = 0, avgV2 = 0, avgP2 = 0;
 
-  bool ready = sampleSensors(avgI1, avgV1, avgP1,
-                             avgI2, avgV2, avgP2);
+  bool ready = sampleSensors(avgI1, avgV1, avgP1, avgI2, avgV2, avgP2);
+  if (!ready) return;
 
-  if (!ready)
-    return;
-
-  // State transitions
+  // --- Relay state machine ---
   switch (state) {
     case STATE_IDLE:
-      handleIdle(avgI1);
+      // Only auto turn ON if relay was off due to overcurrent
+      if (offReason == OVERCURRENT) handleIdle(avgI1);
       break;
 
     case STATE_RELAY_ON:
-      handleRelayOn(avgI1);
+      if (avgI1 >= trip_mA) {
+        Serial.println(">>> OVERCURRENT TRIP <<<");
+        setRelay(false);
+        offReason = OVERCURRENT;
+        state = STATE_TRIPPED;
+      }
       break;
 
     case STATE_TRIPPED:
-      handleTripped(avgI1);
+      if (avgI1 <= reset_mA && offReason == OVERCURRENT) {
+        Serial.println(">>> AUTO RESET <<<");
+        setRelay(true);
+        offReason = NONE;
+        state = STATE_RELAY_ON;
+      }
       break;
   }
 }
+
