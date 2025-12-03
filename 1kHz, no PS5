@@ -1,0 +1,137 @@
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+
+// TWO INA219 MODULES
+Adafruit_INA219 ina1(0x40);
+Adafruit_INA219 ina2(0x41);
+
+// averaging settings
+const unsigned long sampleIntervalMicros = 1000; // 1 kHz sampling
+const int averagePeriodSec = 1;
+const int numSamples = averagePeriodSec * 1000;
+unsigned long lastSampleMicros = 0;
+
+// Relay setup
+const int relayPin = 7;
+const bool relayActiveLow = false;
+const float trip_mA  = 160.0;
+const float reset_mA = 150.0;
+const unsigned long inrushIgnoreMs = 500;
+
+// accumulator values
+float totalBus1 = 0, totalCurrent1 = 0, totalPower1 = 0;
+float totalBus2 = 0, totalCurrent2 = 0, totalPower2 = 0;
+int sampleCount = 0;
+unsigned long lastRelayOnTime = 0;
+
+// ---------- STATE MACHINE ----------
+enum SystemState {
+  STATE_RELAY_ON,    // relay ON, monitoring
+  STATE_TRIPPED      // relay OFF due to overcurrent
+};
+
+SystemState state = STATE_RELAY_ON;
+
+enum OffReason { NONE, OVERCURRENT };
+OffReason offReason = NONE;
+
+void setRelay(bool on) {
+  digitalWrite(relayPin, relayActiveLow ? !on : on);
+  if (on) lastRelayOnTime = millis();
+}
+
+// ---- Setup ----
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(115200);   // For ESP or other UART communication
+  pinMode(relayPin, OUTPUT);
+
+  // Relay starts ON
+  setRelay(true);
+
+  Serial.println("Dual INA219 Monitor + Relay Trip");
+
+  if (!ina1.begin()) { Serial.println("INA219 #1 not found!"); while(1); }
+  ina1.setCalibration_32V_2A();
+
+  if (!ina2.begin()) { Serial.println("INA219 #2 not found!"); while(1); }
+  ina2.setCalibration_32V_2A();
+}
+
+// ---- Sample INA219 and compute averages ----
+bool sampleSensors(float &avgI1, float &avgV1, float &avgP1,
+                   float &avgI2, float &avgV2, float &avgP2)
+{
+    unsigned long now = micros();
+    if (now - lastSampleMicros < sampleIntervalMicros) return false;
+    lastSampleMicros = now;
+
+    float v1 = ina1.getBusVoltage_V();
+    float i1 = ina1.getCurrent_mA();
+    float p1 = ina1.getPower_mW();
+    float v2 = ina2.getBusVoltage_V();
+    float i2 = ina2.getCurrent_mA();
+    float p2 = ina2.getPower_mW();
+
+    totalBus1     += v1;
+    totalCurrent1 += i1;
+    totalPower1   += p1;
+
+    totalBus2     += v2;
+    totalCurrent2 += i2;
+    totalPower2   += p2;
+
+    sampleCount++;
+
+    if (sampleCount >= numSamples)
+    {
+        avgV1 = totalBus1 / sampleCount;
+        avgI1 = totalCurrent1 / sampleCount;
+        avgP1 = totalPower1 / sampleCount;
+
+        avgV2 = totalBus2 / sampleCount;
+        avgI2 = totalCurrent2 / sampleCount;
+        avgP2 = totalPower2 / sampleCount;
+
+        totalBus1 = totalCurrent1 = totalPower1 = 0;
+        totalBus2 = totalCurrent2 = totalPower2 = 0;
+        sampleCount = 0;
+
+        Serial.println("----- 1 Second Averages -----");
+        Serial.printf("INA1 → V: %.2f  I: %.2f  P: %.2f\n", avgV1, avgI1, avgP1);
+        Serial.printf("INA2 → V: %.2f  I: %.2f  P: %.2f\n", avgV2, avgI2, avgP2);
+
+        return true;
+    }
+
+    return false;
+}
+
+// ------------ MAIN LOOP ------------
+void loop() {
+  float avgI1 = 0, avgV1 = 0, avgP1 = 0;
+  float avgI2 = 0, avgV2 = 0, avgP2 = 0;
+
+  if (!sampleSensors(avgI1, avgV1, avgP1, avgI2, avgV2, avgP2)) return;
+
+  // --- Relay state machine ---
+  switch (state) {
+    case STATE_RELAY_ON:
+      if ((millis() - lastRelayOnTime > inrushIgnoreMs) && avgI1 >= trip_mA) {
+        Serial.println(">>> OVERCURRENT TRIP <<<");
+        setRelay(false);
+        offReason = OVERCURRENT;
+        state = STATE_TRIPPED;
+      }
+      break;
+
+    case STATE_TRIPPED:
+      if (avgI1 <= reset_mA) {
+        Serial.println(">>> AUTO RESET <<<");
+        setRelay(true);
+        offReason = NONE;
+        state = STATE_RELAY_ON;
+      }
+      break;
+  }
+}
