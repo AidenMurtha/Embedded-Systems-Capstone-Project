@@ -2,163 +2,187 @@
 #include <Adafruit_INA219.h>
 
 // --- INA219 Sensors ---
-Adafruit_INA219 ina1(0x40);
-Adafruit_INA219 ina2(0x41);
+// These are the two current/voltage sensors
+Adafruit_INA219 ina1(0x40);  // sensor 1 at I2C address 0x40
+Adafruit_INA219 ina2(0x41);  // sensor 2 at I2C address 0x41
 
-// --- Sampling settings ---
-const unsigned long sampleIntervalMicros = 1000; // 1 kHz
-unsigned long lastSampleMicros = 0;
+// --- Scheduler Task Function Prototypes ---
+// Declare the functions that will be run periodically
+void taskSample();   // read sensors at 1 kHz
+void taskRelay();    // control relay based on overcurrent
+void taskAverages(); // calculate average values and print
+
+// --- Task Scheduler ---
+// Structure that holds each task's interval, last time it ran, and function pointer
+struct Task {
+  unsigned long intervalMicros;   // time between runs in microseconds
+  unsigned long lastRunMicros;    // last time this task ran
+  void (*function)();             // pointer to the task function
+};
+
+// Task intervals
+Task tasks[] = {
+  {1000, 0, taskSample},     // read sensors every 1 ms (1 kHz)
+  {2000, 0, taskRelay},      // check relay every 2 ms
+  {3000000, 0, taskAverages} // calculate averages every 3 seconds
+};
+const int NUM_TASKS = sizeof(tasks) / sizeof(tasks[0]); // how many tasks
 
 // --- Relay setup ---
-const int relayPin = 7;
-const bool relayActiveLow = false;
+const int relayPin = 7;           // pin connected to relay
+const bool relayActiveLow = false; // set to true if relay is active low
 
 // --- Trip/reset thresholds ---
-const float trip_mA  = 160.0; 
-const float reset_mA = 150.0; // not used for trip
-const unsigned long inrushIgnoreMs = 500;      // ignore initial spikes
-const unsigned long relayOffMinMs = 2000;      // min off time after trip
+const float trip_mA  = 160.0;         // trip relay if current exceeds 160 mA
+const unsigned long inrushIgnoreMs = 500; // ignore initial inrush current for 500 ms
+const unsigned long relayOffMinMs = 2000; // keep relay off for at least 2 s after trip
 
 // --- Overcurrent detection ---
-const int tripSampleCount = 100;   // number of consecutive overcurrent samples needed to trip
-int overcurrentCounter = 0;
-unsigned long lastRelayOnTime = 0;
-unsigned long lastRelayOffTime = 0;
+const int tripSampleCount = 100;  // number of consecutive overcurrent readings before trip
+int overcurrentCounter = 0;       // counter for overcurrent readings
+unsigned long lastRelayOnTime = 0;  // last time relay turned on
+unsigned long lastRelayOffTime = 0; // last time relay turned off
 
 // --- Averaging accumulators ---
+// used to calculate averages over 3 seconds
 float totalBus1 = 0, totalCurrent1 = 0, totalPower1 = 0;
 float totalBus2 = 0, totalCurrent2 = 0, totalPower2 = 0;
-int sampleCount = 0;
-const int averagePeriodSec = 3;
-const int numSamples = averagePeriodSec * 1000;
+int sampleCount = 0; // number of samples collected
 
 // --- State machine ---
+// keeps track of whether relay is ON or TRIPPED
 enum SystemState { STATE_RELAY_ON, STATE_TRIPPED };
 SystemState state = STATE_RELAY_ON;
 
+// global instantaneous current used by relay logic task
+float instI1_global = 0;
+
 // ------------ RELAY CONTROL ------------
+// turns the relay on or off
 void setRelay(bool on) {
+  // handle active high or active low relay
   digitalWrite(relayPin, relayActiveLow ? !on : on);
+  
+  // record the time the relay changed state
   if (on) lastRelayOnTime = millis();
   else lastRelayOffTime = millis();
 }
 
 // ------------ SETUP ------------
 void setup() {
-  Serial.begin(115200);
-  Serial1.begin(115200); // send to ESP
-  pinMode(relayPin, OUTPUT);
-  Serial.println("Dual INA219 Monitor + Relay Trip (State Machine)");
+  Serial.begin(115200);  // debug output to Serial Monitor
+  Serial1.begin(115200); // data output to ESP or other MCU
 
-  setRelay(true); // start ON
+  pinMode(relayPin, OUTPUT); // configure relay pin as output
+  setRelay(true);            // turn relay on initially
 
-  if (!ina1.begin()) { Serial.println("INA219 #1 not found!"); while (1); }
-  ina1.setCalibration_32V_2A();
+  // initialize INA219 sensors
+  if (!ina1.begin()) { Serial.println("INA219 #1 not found"); while (1); }
+  ina1.setCalibration_32V_2A(); // set sensor #1 to 32V, 2A range
 
-  if (!ina2.begin()) { Serial.println("INA219 #2 not found!"); while (1); }
-  ina2.setCalibration_32V_2A();
+  if (!ina2.begin()) { Serial.println("INA219 #2 not found"); while (1); }
+  ina2.setCalibration_32V_2A(); // set sensor #2 to 32V, 2A range
+
+  Serial.println("System Ready — Round Robin Scheduler Active");
 }
 
-// ------------ SAMPLE AND AVERAGE SENSORS ------------
-bool sampleSensors(float &avgI1, float &avgV1, float &avgP1,
-                   float &avgI2, float &avgV2, float &avgP2,
-                   float &instI1) {
-  unsigned long now = micros();
-  if (now - lastSampleMicros < sampleIntervalMicros) return false;
-  lastSampleMicros = now;
+// ------------ SENSOR SAMPLING (1 kHz) ------------
+// reads voltage, current, and power from both sensors
+void taskSample() {
+  float v1 = ina1.getBusVoltage_V();  // read voltage sensor 1
+  instI1_global = ina1.getCurrent_mA(); // read current sensor 1
+  float p1 = ina1.getPower_mW();      // read power sensor 1
 
-  // instantaneous readings
-  float v1 = ina1.getBusVoltage_V();
-  instI1 = ina1.getCurrent_mA();
-  float p1 = ina1.getPower_mW();
+  float v2 = ina2.getBusVoltage_V();  // read voltage sensor 2
+  float i2 = ina2.getCurrent_mA();    // read current sensor 2
+  float p2 = ina2.getPower_mW();      // read power sensor 2
 
-  float v2 = ina2.getBusVoltage_V();
-  float i2 = ina2.getCurrent_mA();
-  float p2 = ina2.getPower_mW();
-
-  // accumulate for averaging
-  totalBus1     += v1; totalCurrent1 += instI1; totalPower1 += p1;
+  // accumulate totals for averaging later
+  totalBus1     += v1; totalCurrent1 += instI1_global; totalPower1 += p1;
   totalBus2     += v2; totalCurrent2 += i2; totalPower2 += p2;
-  sampleCount++;
-
-  if (sampleCount >= numSamples) {
-    avgV1 = totalBus1 / sampleCount;
-    avgI1 = totalCurrent1 / sampleCount;
-    avgP1 = totalPower1 / sampleCount;
-
-    avgV2 = totalBus2 / sampleCount;
-    avgI2 = totalCurrent2 / sampleCount;
-    avgP2 = totalPower2 / sampleCount;
-
-    // reset accumulators
-    totalBus1 = totalCurrent1 = totalPower1 = 0;
-    totalBus2 = totalCurrent2 = totalPower2 = 0;
-    sampleCount = 0;
-
-    // print averages
-    Serial.println("----- 3 Second Averages -----");
-    Serial.print("INA1 Avg V: "); Serial.println(avgV1);
-    Serial.print("INA1 Avg I: "); Serial.println(avgI1);
-    Serial.print("INA1 Avg P: "); Serial.println(avgP1);
-
-    Serial.print("INA2 Avg V: "); Serial.println(avgV2);
-    Serial.print("INA2 Avg I: "); Serial.println(avgI2);
-    Serial.print("INA2 Avg P: "); Serial.println(avgP2);
-    Serial.println("-----------------------------");
-
-    // send to ESP
-    Serial1.print(avgV1); Serial1.print(",");
-    Serial1.print(avgI1); Serial1.print(",");
-    Serial1.print(avgP1); Serial1.print(",");
-    Serial1.print(avgV2); Serial1.print(",");
-    Serial1.print(avgI2); Serial1.print(",");
-    Serial1.println(avgP2);
-
-    return true;
-  }
-  return false;
+  sampleCount++; // count how many samples collected
 }
 
-// ------------ STATE HANDLERS ------------
-void handleRelayOn(float instI1) {
-  // Count overcurrent samples
-  if (instI1 >= trip_mA) overcurrentCounter++;
-  else overcurrentCounter = 0;
-
-  // Trip if 100 samples overcurrent AND not in inrush
-  if (overcurrentCounter >= tripSampleCount && (millis() - lastRelayOnTime > inrushIgnoreMs)) {
-    Serial.println(">>> OVERCURRENT TRIP <<<");
-    setRelay(false);
-    state = STATE_TRIPPED;
-    overcurrentCounter = 0;
-  }
-}
-
-void handleTripped(float instI1) {
-  // Reset only after minimum off-time
-  if (millis() - lastRelayOffTime >= relayOffMinMs) {
-    Serial.println(">>> AUTO RESET <<<");
-    setRelay(true);
-    state = STATE_RELAY_ON;
-  }
-}
-
-// ------------ MAIN LOOP ------------
-void loop() {
-  float avgI1=0, avgV1=0, avgP1=0;
-  float avgI2=0, avgV2=0, avgP2=0;
-  float instI1=0;
-
-  sampleSensors(avgI1, avgV1, avgP1, avgI2, avgV2, avgP2, instI1);
-
-  // relay state machine
+// ------------ RELAY STATE MACHINE TASK ------------
+// checks for overcurrent and trips relay if needed
+void taskRelay() {
   switch (state) {
     case STATE_RELAY_ON:
-      handleRelayOn(instI1);
+      // increment counter if current exceeds trip threshold
+      if (instI1_global >= trip_mA) overcurrentCounter++;
+      else overcurrentCounter = 0; // reset counter if current is safe
+
+      // trip relay if overcurrent persists long enough
+      if (overcurrentCounter >= tripSampleCount &&
+          (millis() - lastRelayOnTime > inrushIgnoreMs)) {
+
+        Serial.println(">>> OVERCURRENT TRIP <<<");
+        setRelay(false);   // turn relay off
+        state = STATE_TRIPPED; // change state
+        overcurrentCounter = 0; // reset counter
+      }
       break;
 
     case STATE_TRIPPED:
-      handleTripped(instI1);
+      // automatically reset relay after minimum off time
+      if (millis() - lastRelayOffTime >= relayOffMinMs) {
+        Serial.println(">>> AUTO RESET <<<");
+        setRelay(true);   // turn relay back on
+        state = STATE_RELAY_ON; // change state
+      }
       break;
+  }
+}
+
+// ------------ AVERAGING + SERIAL OUTPUT TASK ------------
+// calculate averages and send to Serial/Serial1
+void taskAverages() {
+  if (sampleCount == 0) return; // avoid divide by zero
+
+  // calculate averages for each sensor
+  float avgV1 = totalBus1 / sampleCount;
+  float avgI1 = totalCurrent1 / sampleCount;
+  float avgP1 = totalPower1 / sampleCount;
+
+  float avgV2 = totalBus2 / sampleCount;
+  float avgI2 = totalCurrent2 / sampleCount;
+  float avgP2 = totalPower2 / sampleCount;
+
+  // reset accumulators
+  totalBus1 = totalCurrent1 = totalPower1 = 0;
+  totalBus2 = totalCurrent2 = totalPower2 = 0;
+  sampleCount = 0;
+
+  // print averages to Serial Monitor for debugging
+  Serial.println("----- 3 Second Averages -----");
+  Serial.print("INA1 Avg V: "); Serial.println(avgV1);
+  Serial.print("INA1 Avg I: "); Serial.println(avgI1);
+  Serial.print("INA1 Avg P: "); Serial.println(avgP1);
+
+  Serial.print("INA2 Avg V: "); Serial.println(avgV2);
+  Serial.print("INA2 Avg I: "); Serial.println(avgI2);
+  Serial.print("INA2 Avg P: "); Serial.println(avgP2);
+  Serial.println("-----------------------------");
+
+  // send averages to ESP or other host via Serial1
+  Serial1.print(avgV1); Serial1.print(",");
+  Serial1.print(avgI1); Serial1.print(",");
+  Serial1.print(avgP1); Serial1.print(",");
+  Serial1.print(avgV2); Serial1.print(",");
+  Serial1.print(avgI2); Serial1.print(",");
+  Serial1.println(avgP2);
+}
+
+// ------------ MAIN LOOP (ROUND ROBIN SCHEDULER) ------------
+// simple task scheduler: runs each task at its defined interval
+void loop() {
+  unsigned long now = micros(); // get current time in microseconds
+
+  for (int i = 0; i < NUM_TASKS; i++) {
+    // check if it's time to run the task
+    if (now - tasks[i].lastRunMicros >= tasks[i].intervalMicros) {
+      tasks[i].lastRunMicros = now; // update last run time
+      tasks[i].function();          // call the task function
+    }
   }
 }
