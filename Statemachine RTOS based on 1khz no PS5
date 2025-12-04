@@ -1,0 +1,229 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+
+#include <FreeRTOS.h>
+#include <task.h>
+#include <semphr.h>
+
+// ---------------- INA219 Sensors ----------------
+Adafruit_INA219 ina1(0x40);
+Adafruit_INA219 ina2(0x41);
+
+// ---------------- Relay Pin ----------------
+const int relayPin = 7;
+const bool relayActiveLow = false;
+
+// ---------------- Trip Settings ----------------
+const float trip_mA = 160.0;
+const unsigned long inrushIgnoreMs = 500;
+const unsigned long relayOffMinMs = 2000;
+
+int overcurrentCounter = 0;
+const int tripSampleCount = 100;
+
+unsigned long lastRelayOnTime = 0;
+unsigned long lastRelayOffTime = 0;
+
+// ---------------- Averages ----------------
+float totalBus1 = 0, totalCurrent1 = 0, totalPower1 = 0;
+float totalBus2 = 0, totalCurrent2 = 0, totalPower2 = 0;
+int sampleCount = 0;
+
+// Shared instantaneous current for relay logic
+float instI1 = 0;
+
+// Mutex for shared variables
+SemaphoreHandle_t dataMutex;
+
+// ---------------- System State Machine ----------------
+enum SystemState { STATE_RELAY_ON, STATE_TRIPPED };
+SystemState systemState = STATE_RELAY_ON;
+
+
+// ===================================================
+//                     RELAY CONTROL
+// ===================================================
+void setRelay(bool on) {
+  digitalWrite(relayPin, relayActiveLow ? !on : on);
+  if (on) lastRelayOnTime = millis();
+  else    lastRelayOffTime = millis();
+}
+
+
+// ===================================================
+//                     TASK 1
+//             Sensor Sampling @ 1 kHz
+// ===================================================
+void SensorReadTask(void *pv) {
+  const TickType_t period = 1; // 1 ms = 1 kHz
+  TickType_t lastWake = xTaskGetTickCount();
+
+  for (;;) {
+    float v1 = ina1.getBusVoltage_V();
+    float i1 = ina1.getCurrent_mA();
+    float p1 = ina1.getPower_mW();
+
+    float v2 = ina2.getBusVoltage_V();
+    float i2 = ina2.getCurrent_mA();
+    float p2 = ina2.getPower_mW();
+
+    // Update shared values
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+      instI1 = i1;
+
+      totalBus1     += v1;
+      totalCurrent1 += i1;
+      totalPower1   += p1;
+
+      totalBus2     += v2;
+      totalCurrent2 += i2;
+      totalPower2   += p2;
+
+      sampleCount++;
+      xSemaphoreGive(dataMutex);
+    }
+
+    vTaskDelayUntil(&lastWake, period);
+  }
+}
+
+
+// ===================================================
+//                     TASK 2
+//            Relay Logic @ 2 ms
+// ===================================================
+void RelayTask(void *pv) {
+  const TickType_t period = 2; // 2 ms
+  TickType_t lastWake = xTaskGetTickCount();
+
+  for (;;) {
+    float current = 0;
+
+    // Read shared current safely
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+      current = instI1;
+      xSemaphoreGive(dataMutex);
+    }
+
+    switch (systemState) {
+      case STATE_RELAY_ON:
+        if (current >= trip_mA)
+          overcurrentCounter++;
+        else
+          overcurrentCounter = 0;
+
+        if (overcurrentCounter >= tripSampleCount &&
+            (millis() - lastRelayOnTime > inrushIgnoreMs)) {
+
+          Serial.println(">>> OVERCURRENT TRIP <<<");
+          setRelay(false);
+          systemState = STATE_TRIPPED;
+          overcurrentCounter = 0;
+        }
+        break;
+
+      case STATE_TRIPPED:
+        if (millis() - lastRelayOffTime >= relayOffMinMs) {
+          Serial.println(">>> AUTO RESET <<<");
+          setRelay(true);
+          systemState = STATE_RELAY_ON;
+        }
+        break;
+    }
+
+    vTaskDelayUntil(&lastWake, period);
+  }
+}
+
+
+// ===================================================
+//                     TASK 3
+//            Average + Serial Output
+//              Every 3 Seconds
+// ===================================================
+void AverageTask(void *pv) {
+  const TickType_t period = 3000 / portTICK_PERIOD_MS;
+  TickType_t lastWake = xTaskGetTickCount();
+
+  for (;;) {
+    float avgV1, avgI1, avgP1;
+    float avgV2, avgI2, avgP2;
+    int count;
+
+    // Safely read & reset accumulators
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+      count = sampleCount;
+
+      if (count > 0) {
+        avgV1 = totalBus1     / count;
+        avgI1 = totalCurrent1 / count;
+        avgP1 = totalPower1   / count;
+
+        avgV2 = totalBus2     / count;
+        avgI2 = totalCurrent2 / count;
+        avgP2 = totalPower2   / count;
+      }
+
+      totalBus1 = totalCurrent1 = totalPower1 = 0;
+      totalBus2 = totalCurrent2 = totalPower2 = 0;
+      sampleCount = 0;
+
+      xSemaphoreGive(dataMutex);
+    }
+
+    if (count > 0) {
+      Serial.println("----- 3 Second Averages -----");
+      Serial.print("INA1 Avg V: "); Serial.println(avgV1);
+      Serial.print("INA1 Avg I: "); Serial.println(avgI1);
+      Serial.print("INA1 Avg P: "); Serial.println(avgP1);
+      Serial.print("INA2 Avg V: "); Serial.println(avgV2);
+      Serial.print("INA2 Avg I: "); Serial.println(avgI2);
+      Serial.print("INA2 Avg P: "); Serial.println(avgP2);
+      Serial.println("-----------------------------");
+
+      Serial1.print(avgV1); Serial1.print(",");
+      Serial1.print(avgI1); Serial1.print(",");
+      Serial1.print(avgP1); Serial1.print(",");
+      Serial1.print(avgV2); Serial1.print(",");
+      Serial1.print(avgI2); Serial1.print(",");
+      Serial1.println(avgP2);
+    }
+
+    vTaskDelayUntil(&lastWake, period);
+  }
+}
+
+
+// ===================================================
+//                       SETUP
+// ===================================================
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(115200);
+
+  pinMode(relayPin, OUTPUT);
+  setRelay(true);
+
+  if (!ina1.begin()) { Serial.println("INA219 #1 FAIL"); while(1); }
+  if (!ina2.begin()) { Serial.println("INA219 #2 FAIL"); while(1); }
+  ina1.setCalibration_32V_2A();
+  ina2.setCalibration_32V_2A();
+
+  dataMutex = xSemaphoreCreateMutex();
+
+  // Create RTOS tasks
+  xTaskCreate(SensorReadTask, "SensorRead", 2048, NULL, 3, NULL);
+  xTaskCreate(RelayTask,      "Relay",      2048, NULL, 2, NULL);
+  xTaskCreate(AverageTask,    "Averages",   3072, NULL, 1, NULL);
+
+  Serial.println("FreeRTOS Power Monitor Running");
+}
+
+
+// ===================================================
+//                     LOOP (unused)
+// ===================================================
+void loop() {
+  // FreeRTOS takes over — loop() not used.
+}
