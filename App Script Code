@@ -1,0 +1,77 @@
+// ======================
+// CONFIG
+// ======================
+const SHEET_NAME = 'Data';
+const TOKEN = 'esp_secure_token_123';
+
+
+// ======================
+// ESP POSTS DATA
+// ======================
+function doPost(e) {
+  if (!e.parameter.token || e.parameter.token !== TOKEN) {
+    return ContentService.createTextOutput("ERR: bad token");
+  }
+
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+
+  const device  = e.parameter.device  || "-";
+  const voltage = e.parameter.voltage || "-";
+  const current = e.parameter.current || "-";
+  const power = e.parameter.power || "-";
+
+
+  sheet.appendRow([
+    new Date(),
+    device,
+    voltage,
+    current,
+    power
+  ]);
+
+  return ContentService.createTextOutput("ok");
+}
+
+
+
+// ======================
+// JSON API (dashboard uses this)
+// ======================
+function doGet(e) {
+
+  // If request is ?mode=json → return JSON only
+  if (e.parameter.mode === "json") {
+    return getJSON();
+  }
+
+  // Otherwise show debug message
+  return ContentService.createTextOutput("Smart Home API Running");
+}
+
+
+
+// ======================
+// Return latest A/B + history
+// ======================
+function getJSON() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+
+  // Read all rows except header
+  const rows = sheet.getRange(2, 1, sheet.getLastRow()-1, 5).getValues();
+
+  // Helper: find latest row for device A or B
+  function latest(device) {
+    return [...rows].reverse().find(r => r[1] === device) ||
+           ["-", device, "-", "-"];
+  }
+
+  const payload = {
+    A: latest("A"),        // Latest row for device A
+    B: latest("B"),        // Latest row for device B
+    history: rows.slice(-50) // Last 50 rows
+  };
+
+  return ContentService
+    .createTextOutput(JSON.stringify(payload))
+    .setMimeType(ContentService.MimeType.JSON);
+}
